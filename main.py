@@ -4,8 +4,10 @@ import json
 import requests
 import shutil
 import argparse
+import time
 from pathlib import Path
 from datetime import datetime
+from pydub import AudioSegment
 
 api_url = "https://ai.hackclub.com/proxy/v1/chat/completions"
 api_key = "sk-hc-v1-92624fcb92464305a0461b27bd661b0514a787f5948f4938b3f7c077d9ea7fa7"
@@ -139,11 +141,9 @@ def classify_llm(path):
         out = ai(llm, messages)
         if not out or len(out.strip()) == 0:
             return None
-        
         lines = out.splitlines()
         if not lines:
             return None
-            
         out = lines[0].strip()
         out = out.split(".")[0].strip()
         return out
@@ -165,7 +165,7 @@ def rename_vlm(path):
         }
         mime_type = mime_types.get(ext, "image/jpeg")
         with open(path, "rb") as f:
-            b = f.read(500_000)
+            b = f.read(500000)
             b64 = base64.b64encode(b).decode()
         messages = [
             {
@@ -196,12 +196,60 @@ def rename_vlm(path):
             out = out.split(".")[0].strip()
         if len(out) < 2 or len(out) > 100:
             return None
-            
         return out
     except Exception as e:
         print(e)
         return None
 
+def transcribe_audio(path):
+    try:
+        try:
+            audio = AudioSegment.from_file(path)
+            duration_seconds = len(audio) / 1000.0
+            duration_str = f"{int(duration_seconds // 60)}m {int(duration_seconds % 60)}s"
+            sample_rate = audio.frame_rate
+            channels = audio.channels
+            file_size = os.path.getsize(path)
+            size_mb = file_size / (1024 * 1024)
+            filename = os.path.basename(path)
+            prompt = (
+                "You are a file naming assistant for audio files. "
+                "Analyze the filename and audio properties to suggest a SHORT descriptive filename (2-4 words max, no extension). "
+                "Infer the type of content from patterns:\n"
+                "- Voice recordings/memos: usually mono, short duration, small size\n"
+                "- Music: usually stereo, higher bitrate, longer duration\n"
+                "- Podcasts: usually mono or stereo, medium duration\n"
+                "- Sound effects: usually very short\n"
+                "Look for keywords in the filename like 'record', 'voice', 'memo', 'music', 'song', etc.\n"
+                "Be creative but accurate. Return only the filename, nothing else.\n\n"
+                f"Original filename: {filename}\n"
+                f"Duration: {duration_str}\n"
+                f"Sample rate: {sample_rate}Hz\n"
+                f"Channels: {'Stereo' if channels == 2 else 'Mono'}\n"
+                f"File size: {size_mb:.1f}MB\n"
+            )
+            messages = [{"role":"user","content":prompt}]
+            renamed = ai(llm, messages)
+            if not renamed or len(renamed.strip()) == 0:
+                return None
+            lines = renamed.splitlines()
+            if not lines:
+                return None
+            renamed = lines[0].strip().strip('"').strip("'")
+            if renamed.lower().startswith("filename:"):
+                renamed = renamed[9:].strip()
+            if "." in renamed:
+                renamed = renamed.split(".")[0].strip()
+            if len(renamed) < 2 or len(renamed) > 100:
+                return None
+            return renamed
+        except Exception as e:
+            print(e)
+            return None
+    except Exception as e:
+        print(e)
+        return None
+    
 def rename_clean(path, target_dir):
     base = os.path.basename(path)
     if "." in base:
@@ -217,18 +265,19 @@ def rename_clean(path, target_dir):
     else:
         new_base = f"file_{stamp}"
     cd = f"{new_base}.{ext}" if ext else new_base
-    cpath = os.path.join(target_dir, cd)
+    c_path = os.path.join(target_dir, cd)
     i = 1
-    while os.path.exists(cpath):
+    while os.path.exists(c_path):
         cd = f"{new_base}_{i}.{ext}" if ext else f"{new_base}_{i}"
-        cpath = os.path.join(target_dir, cd)
+        c_path = os.path.join(target_dir, cd)
         i += 1
-    return cpath
+    return c_path
+
 def move_file(src, dest_dir):
     ensure_dir(dest_dir)
-    dest_path = rename_clean(src, dest_dir)
-    shutil.move(src, dest_path)
-    return dest_path
+    dest = rename_clean(src, dest_dir)
+    shutil.move(src, dest)
+    return dest
 
 def is_junk(path):
     name = os.path.basename(path).lower()
@@ -239,15 +288,19 @@ def is_junk(path):
         return True
     return False
 
-def smart_rename(path, category, use_ai=True):
+def smart_rename(path, cat, use_ai=True):
     if not use_ai:
         return None
     ext = os.path.basename(path).split(".")[-1].lower() if "." in os.path.basename(path) else ""
-    if category == "Images" and ext in default["Images"]:
-        new_name = rename_vlm(path)
-        if new_name:
-            return new_name
-    if category in ["Docs", "Code"]:
+    if cat == "Images" and ext in default["Images"]:
+        renamed = rename_vlm(path)
+        if renamed:
+            return renamed
+    if cat == "Audio" and ext in default["Audio"]:
+        renamed = transcribe_audio(path)
+        if renamed:
+            return renamed
+    if cat in ["Docs", "Code"]:
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read(2000)
@@ -258,53 +311,51 @@ def smart_rename(path, category, use_ai=True):
                 f"Content preview:\n{content[:1000]}\n"
             )
             messages = [{"role":"user","content":prompt}]
-            new_name = ai(llm, messages)
-            if not new_name or len(new_name.strip()) == 0:
+            renamed = ai(llm, messages)
+            if not renamed or len(renamed.strip()) == 0:
                 return None
-            lines = new_name.splitlines()
+            lines = renamed.splitlines()
             if not lines:
                 return None
-            new_name = lines[0].strip().strip('"').strip("'")
-            if len(new_name) < 2 or len(new_name) > 100:
+            renamed = lines[0].strip().strip('"').strip("'")
+            if len(renamed) < 2 or len(renamed) > 100:
                 return None
-                
-            return new_name
+            return renamed
         except Exception as e:
             print(e)
             return None
     return None
 
 def sort_directory(source_dir, dest_dir=None):
-    source_path = Path(source_dir).resolve()
+    source = Path(source_dir).resolve()
     if dest_dir:
-        dest_path = Path(dest_dir).resolve()
+        dest = Path(dest_dir).resolve()
     else:
-        dest_path = source_path / "sorted"
-    if not source_path.exists():
+        dest = source / "sorted"
+    if not source.exists():
         return    
     rules_dict = load_rules()
     hist = load_history()
     
-    files = [f for f in source_path.iterdir() if f.is_file()]
+    files = [f for f in source.iterdir() if f.is_file()]
     
     if not files:
         return
     for file_path in files:
         try:
-            file_name = file_path.name
             if is_junk(str(file_path)):
                 continue
-            category, scores = deterministic_category(str(file_path), rules_dict)
-            if scores[category] < 10:
-                ai_category = classify_llm(str(file_path))
-                if ai_category and ai_category in rules_dict:
-                    category = ai_category
-            new_name = smart_rename(str(file_path), category)            
-            target_dir = dest_path / category            
+            cat, scores = deterministic_category(str(file_path), rules_dict)
+            if scores[cat] < 10:
+                ai_cat = classify_llm(str(file_path))
+                if ai_cat and ai_cat in rules_dict:
+                    cat = ai_cat
+            renamed = smart_rename(str(file_path), cat)            
+            target_dir = dest / cat            
             ensure_dir(target_dir)
             ext = file_path.suffix
-            if new_name:
-                clean_name = clean_filename(new_name)
+            if renamed:
+                clean_name = clean_filename(renamed)
                 timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
                 base_name = f"{clean_name}_{timestamp}{ext}"
             else:
@@ -313,8 +364,8 @@ def sort_directory(source_dir, dest_dir=None):
             dest_file = target_dir / base_name
             counter = 1
             while dest_file.exists():
-                if new_name:
-                    clean_name = clean_filename(new_name)
+                if renamed:
+                    clean_name = clean_filename(renamed)
                     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
                     base_name = f"{clean_name}_{timestamp}_{counter}{ext}"
                 else:
@@ -324,9 +375,9 @@ def sort_directory(source_dir, dest_dir=None):
             shutil.move(str(file_path), str(dest_file))
             hist[str(dest_file)] = {
                 "original": str(file_path),
-                "category": category,
+                "category": cat,
                 "timestamp": datetime.now().isoformat(),
-                "ai_renamed": new_name is not None
+                "ai_renamed": renamed is not None
             }
             print()
         except Exception as e:
