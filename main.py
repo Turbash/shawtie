@@ -326,7 +326,7 @@ def smart_rename(path, cat, use_ai=True):
             return None
     return None
 
-def sort_directory(source_dir, dest_dir=None):
+def sort_directory(source_dir, dest_dir=None, recursive=True):
     source = Path(source_dir).resolve()
     if dest_dir:
         dest = Path(dest_dir).resolve()
@@ -336,14 +336,25 @@ def sort_directory(source_dir, dest_dir=None):
         return    
     rules_dict = load_rules()
     hist = load_history()
-    
-    files = [f for f in source.iterdir() if f.is_file()]
+    if recursive:
+        files = []
+        for root, dirs, filenames in os.walk(source):
+            root_path = Path(root)
+            if dest in root_path.parents or root_path == dest:
+                continue
+            for filename in filenames:
+                files.append(root_path / filename)
+    else:
+        files = [f for f in source.iterdir() if f.is_file()]
     
     if not files:
         return
+    sorted = 0
+    skipped = 0
     for file_path in files:
         try:
             if is_junk(str(file_path)):
+                skipped += 1
                 continue
             cat, scores = deterministic_category(str(file_path), rules_dict)
             if scores[cat] < 10:
@@ -351,7 +362,7 @@ def sort_directory(source_dir, dest_dir=None):
                 if ai_cat and ai_cat in rules_dict:
                     cat = ai_cat
             renamed = smart_rename(str(file_path), cat)            
-            target_dir = dest / cat            
+            target_dir = dest / cat
             ensure_dir(target_dir)
             ext = file_path.suffix
             if renamed:
@@ -379,34 +390,57 @@ def sort_directory(source_dir, dest_dir=None):
                 "timestamp": datetime.now().isoformat(),
                 "ai_renamed": renamed is not None
             }
-            print()
+            sorted += 1
         except Exception as e:
-            print()
-    
+            print(e)
+            skipped += 1
     save_history(hist)
+    if recursive:
+        cleanup_empty_dirs(source, dest)
+
+def cleanup_empty_dirs(source, dest):
+    for root, dirs, files in os.walk(source, topdown=False):
+        root_path = Path(root)
+        if root_path == source or root_path == dest or dest in root_path.parents:
+            continue
+        try:
+            if not any(root_path.iterdir()):
+                root_path.rmdir()
+                print(f"  🗑️  Removed empty directory: {root_path.relative_to(source)}")
+        except (OSError, ValueError):
+            pass
 
 def main():
     parser = argparse.ArgumentParser(
         description="Shawtie - AI powered file organization",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    
     parser.add_argument(
         "source",
         help="Source directory to sort"
     )
-    
     parser.add_argument(
         "-o", "--output",
         dest="output",
         help="Output directory (default: source/sorted)"
     )
-    
+    parser.add_argument(
+        "-r", "--recursive",
+        action="store_true",
+        default=True,
+        help="Sort files in subdirectories recursively (default: True)"
+    )
+    parser.add_argument(
+        "--no-recursive",
+        action="store_false",
+        dest="recursive",
+        help="Only sort files in the top-level directory"
+    )
     args = parser.parse_args()
-    
     sort_directory(
         source_dir=args.source,
         dest_dir=args.output,
+        recursive=args.recursive,
     )
 
 if __name__ == "__main__":
