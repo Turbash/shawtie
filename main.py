@@ -8,6 +8,13 @@ import time
 from pathlib import Path
 from datetime import datetime
 from pydub import AudioSegment
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn, TimeElapsedColumn
+from rich.table import Table
+from rich.panel import Panel
+from rich import box
+
+console = Console()
 
 api_url = "https://ai.hackclub.com/proxy/v1/chat/completions"
 api_key = "sk-hc-v1-92624fcb92464305a0461b27bd661b0514a787f5948f4938b3f7c077d9ea7fa7"
@@ -334,6 +341,7 @@ def sort_directory(source_dir, dest_dir=None, recursive=True):
         dest = source / "sorted"
     if not source.exists():
         return    
+    
     rules_dict = load_rules()
     hist = load_history()
     if recursive:
@@ -349,54 +357,95 @@ def sort_directory(source_dir, dest_dir=None, recursive=True):
     
     if not files:
         return
-    sorted = 0
-    skipped = 0
-    for file_path in files:
-        try:
-            if is_junk(str(file_path)):
-                skipped += 1
-                continue
-            cat, scores = deterministic_category(str(file_path), rules_dict)
-            if scores[cat] < 10:
-                ai_cat = classify_llm(str(file_path))
-                if ai_cat and ai_cat in rules_dict:
-                    cat = ai_cat
-            renamed = smart_rename(str(file_path), cat)            
-            target_dir = dest / cat
-            ensure_dir(target_dir)
-            ext = file_path.suffix
-            if renamed:
-                clean_name = clean_filename(renamed)
-                timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                base_name = f"{clean_name}_{timestamp}{ext}"
-            else:
-                base_name = f"{file_path.stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
-            
-            dest_file = target_dir / base_name
-            counter = 1
-            while dest_file.exists():
+    
+    stats = {
+        "sorted": 0,
+        "skipped": 0,
+        "errors": 0,
+        "by_category": {},
+        "ai_renamed": 0,
+        "total_size": 0
+    }
+    with Progress(SpinnerColumn(),TextColumn("[prog.description]{task.description}"),BarColumn(),TextColumn("[prog.percentage]{task.percentage:>3.0f}%"),TextColumn("•"),TextColumn("[cyan]{task.completed}/{task.total}[/cyan]"),TextColumn("•"),TimeElapsedColumn(),TextColumn("•"),TimeRemainingColumn(),console=console) as prog:
+
+        task = prog.add_task("[cyan]Sorting files...", total=len(files))
+        for f in files:
+            try:
+                file_display = f.name[:40] + "..." if len(f.name) > 40 else f.name
+                prog.update(task, description=f"[cyan]Sorting:[/cyan] [yellow]{file_display}[/yellow]")
+                if is_junk(str(f)):
+                    stats["skipped"] += 1
+                    prog.advance(task)
+                    continue
+                try:
+                    stats["total_size"] += f.stat().st_size
+                except:
+                    pass
+                cat, scores = deterministic_category(str(f), rules_dict)
+                if scores[cat] < 10:
+                    ai_cat = classify_llm(str(f))
+                    if ai_cat and ai_cat in rules_dict:
+                        cat = ai_cat
+                renamed = smart_rename(str(f), cat)
+                if renamed:
+                    stats["ai_renamed"] += 1
+                target_dir = dest / cat
+                ensure_dir(target_dir)
+                ext = f.suffix
                 if renamed:
                     clean_name = clean_filename(renamed)
                     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                    base_name = f"{clean_name}_{timestamp}_{counter}{ext}"
+                    base_name = f"{clean_name}_{timestamp}{ext}"
                 else:
-                    base_name = f"{file_path.stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{counter}{ext}"
+                    base_name = f"{f.stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{ext}"
                 dest_file = target_dir / base_name
-                counter += 1
-            shutil.move(str(file_path), str(dest_file))
-            hist[str(dest_file)] = {
-                "original": str(file_path),
-                "category": cat,
-                "timestamp": datetime.now().isoformat(),
-                "ai_renamed": renamed is not None
-            }
-            sorted += 1
-        except Exception as e:
-            print(e)
-            skipped += 1
+                counter = 1
+                while dest_file.exists():
+                    if renamed:
+                        clean_name = clean_filename(renamed)
+                        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                        base_name = f"{clean_name}_{timestamp}_{counter}{ext}"
+                    else:
+                        base_name = f"{f.stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{counter}{ext}"
+                    dest_file = target_dir / base_name
+                    counter += 1
+                shutil.move(str(f), str(dest_file))
+                hist[str(dest_file)] = {
+                    "original": str(f),
+                    "category": cat,
+                    "timestamp": datetime.now().isoformat(),
+                    "ai_renamed": renamed is not None
+                }
+                stats["sorted"] += 1
+                stats["by_category"][cat] = stats["by_category"].get(cat, 0) + 1
+            except Exception as e:
+                stats["errors"] += 1
+            prog.advance(task)
+    
     save_history(hist)
     if recursive:
         cleanup_empty_dirs(source, dest)
+    console.print()
+    summary_text = f"[green] Successfully sorted:[/green] [bold]{stats['sorted']}[/bold] files"
+    
+    if stats["errors"] > 0:
+        summary_text += f"\n[red]Errors:[/red] [bold]{stats['errors']}[/bold] files"
+    console.print(Panel(summary_text, title="[green][bold]COMPLETED![/bold][/green]", 
+                        border_style="green", box=box.DOUBLE))
+    if stats["by_category"]:
+        table = Table(title="\nFiles by Category", box=box.ROUNDED, show_header=True, 
+                     header_style="bold cyan")
+        table.add_column("Category", style="cyan", no_wrap=True)
+        table.add_column("Files", justify="right", style="green")
+        table.add_column("Percentage", justify="right", style="yellow")
+        
+        sorted_cats = sorted(stats["by_category"].items(), key=lambda x: x[1], reverse=True)
+        for cat, count in sorted_cats:
+            percentage = (count / stats["sorted"] * 100) if stats["sorted"] > 0 else 0
+            table.add_row(cat, str(count), f"{percentage:.1f}%")
+        
+        console.print(table)
+        console.print()
 
 def cleanup_empty_dirs(source, dest):
     for root, dirs, files in os.walk(source, topdown=False):
@@ -406,7 +455,7 @@ def cleanup_empty_dirs(source, dest):
         try:
             if not any(root_path.iterdir()):
                 root_path.rmdir()
-                print(f"  🗑️  Removed empty directory: {root_path.relative_to(source)}")
+                console.print(f"  [dim]🗑️  Removed empty directory: {root_path.relative_to(source)}[/dim]")
         except (OSError, ValueError):
             pass
 
