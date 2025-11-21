@@ -466,6 +466,7 @@ def main():
     )
     parser.add_argument(
         "source",
+        nargs="?",
         help="Source directory to sort"
     )
     parser.add_argument(

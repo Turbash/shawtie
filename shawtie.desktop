@@ -1,0 +1,26 @@
+[Desktop Entry]
+Type=Service
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+MimeType=inode/directory;
+Actions=SortWithShawtie;SortRecursive;ShowHistory;UndoSort;
+Icon=folder-sync
+
+[Desktop Action SortWithShawtie]
+Name=Sort with Shawtie
+Icon=folder-sync
+Exec=konsole --noclose -e bash -c "source /home/t/Shawtie/venv/bin/activate && python /home/t/Shawtie/main.py '%f'"
+
+[Desktop Action SortRecursive]
+Name=Sort Recursively
+Icon=folder-sync
+Exec=konsole --noclose -e bash -c "source /home/t/Shawtie/venv/bin/activate && python /home/t/Shawtie/main.py '%f' --recursive"
+
+[Desktop Action ShowHistory]
+Name=Show History
+Icon=view-history
+Exec=konsole --noclose -e bash -c "source /home/t/Shawtie/venv/bin/activate && python /home/t/Shawtie/main.py --history; echo ''; echo 'Press Enter to close...'; read"
+
+[Desktop Action UndoSort]
+Name=Undo Last Sort
+Icon=edit-undo
+Exec=konsole --noclose -e bash -c "source /home/t/Shawtie/venv/bin/activate && python /home/t/Shawtie/main.py --undo; echo ''; echo 'Press Enter to close...'; read"
