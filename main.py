@@ -419,6 +419,7 @@ def sort_directory(source_dir, dest_dir=None, recursive=True):
                 stats["sorted"] += 1
                 stats["by_category"][cat] = stats["by_category"].get(cat, 0) + 1
             except Exception as e:
+                print(e)
                 stats["errors"] += 1
             prog.advance(task)
     
@@ -433,18 +434,17 @@ def sort_directory(source_dir, dest_dir=None, recursive=True):
     console.print(Panel(summary_text, title="[green][bold]COMPLETED![/bold][/green]", 
                         border_style="green", box=box.DOUBLE))
     if stats["by_category"]:
-        table = Table(title="\nFiles by Category", box=box.ROUNDED, show_header=True, 
+        tab = Table(title="\nFiles by Category", box=box.ROUNDED, show_header=True, 
                      header_style="bold cyan")
-        table.add_column("Category", style="cyan", no_wrap=True)
-        table.add_column("Files", justify="right", style="green")
-        table.add_column("Percentage", justify="right", style="yellow")
-        
+        tab.add_column("Category", style="cyan", no_wrap=True)
+        tab.add_column("Files", justify="right", style="green")
+        tab.add_column("Percentage", justify="right", style="yellow")
         sorted_cats = sorted(stats["by_category"].items(), key=lambda x: x[1], reverse=True)
         for cat, count in sorted_cats:
             percentage = (count / stats["sorted"] * 100) if stats["sorted"] > 0 else 0
-            table.add_row(cat, str(count), f"{percentage:.1f}%")
-        
-        console.print(table)
+            tab.add_row(cat, str(count), f"{percentage:.1f}%")
+
+        console.print(tab)
         console.print()
 
 def cleanup_empty_dirs(source, dest):
@@ -485,12 +485,87 @@ def main():
         dest="recursive",
         help="Only sort files in the top-level directory"
     )
+    parser.add_argument(
+        "--history",
+        action="store_true",
+        help="Show sorting history"
+    )
+    parser.add_argument(
+        "--undo",
+        action="store_true",
+        help="Undo the most recent sorting operation"
+    )
     args = parser.parse_args()
+    if args.history:
+        show_hist()
+        return
+    if args.undo:
+        undo()
+        return
+    if args.source is None:
+        console.print("[red]Error:[/red] Source directory is required.")
+        return
     sort_directory(
         source_dir=args.source,
         dest_dir=args.output,
         recursive=args.recursive,
     )
+
+
+def show_hist():
+    hist = load_history()
+    if not hist:
+        console.print("[yellow]No history found.[/yellow]")
+        return
+    sessions = {}
+    for dest, info in hist.items():
+        timestamp = info.get("timestamp", "unknown")
+        date = timestamp.split("T")[0] if "T" in timestamp else timestamp
+        if date not in sessions:
+            sessions[date] = []
+        sessions[date].append((dest, info))
+    tab = Table(title="Sorting History", box=box.ROUNDED, show_header=True, header_style="bold magenta")
+    tab.add_column("Date", style="magenta", no_wrap=True)
+    tab.add_column("Files Sorted", style="green", justify="right")
+    tab.add_column("Renamed", style="cyan", justify="right")
+    totalfiles = 0
+    totalrenamed = 0
+    for date in sorted(sessions.keys(), reverse=True):
+        files = sessions[date]
+        renamed = sum(1 for _, info in files if info.get("ai_renamed", False))
+        tab.add_row(date, str(len(files)), str(renamed))
+        totalfiles += len(files)
+        totalrenamed += renamed
+    console.print(tab)
+    console.print(f"[bold]Total files sorted:[/bold] {totalfiles}")
+    console.print(f"[bold]Total files renamed:[/bold] {totalrenamed}")
+
+def undo():
+    hist = load_history()
+    if not hist:
+        console.print("[yellow] No history found.[/yellow]")
+        return
+    recents = sorted(hist.items(), key=lambda x: x[1].get("timestamp", ""), reverse=True)
+    if not recents:
+        console.print("[yellow] No history found.[/yellow]")
+        return
+    timestamp = sorted(hist.values(), key=lambda x: x.get("timestamp", ""), reverse=True)[0].get("timestamp", "")
+    date = timestamp.split("T")[0] if "T" in timestamp else timestamp
+    to_undo = {k:v for k,v in hist.items() if v.get("timestamp","").startswith(date)}
+    if not to_undo:
+        console.print("[yellow] No files to undo.[/yellow]")
+        return
+    console.print(f"[cyan] Undoing sorting for date:[/cyan] [bold]{date}[/bold]")
+    for dest, info in to_undo.items():
+        original = info.get("original", None)
+        if original and os.path.exists(dest):
+            ensure_dir(Path(original).parent)
+            shutil.move(dest, original)
+            console.print(f"  [green]↩️  Moved back:[/green] {Path(dest).name} → {original}")
+            del hist[dest]
+    save_history(hist)
+    console.print("[bold]Undo successful.[/bold]")
+    
 
 if __name__ == "__main__":
     main()
