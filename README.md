@@ -20,6 +20,8 @@ Shawtie is an AI powered file organization tool that uses ai to analyse, rename,
 
 - Beautiful progress bars and colourful ooutpts.
 
+- Can see a dry run of what changes will be done.
+
 ## Demo
 
 Demo video will be here
@@ -50,3 +52,13 @@ python main.py test_files
 A decent version of python and pip
 
 KDE Dolphin if you want to test dolphin integration.
+
+## pip package
+
+You can now use shawtie simply by installing it with this command:
+
+```
+pip install shawtie
+```
+
+The package can be seen on https://pypi.org/project/shawtie/
