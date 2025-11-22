@@ -17,7 +17,7 @@ def create_test_directory():
             Instructions:
             Mix all ingredients and bake at 350°F for 30 minutes.
         """,
-        "invoice_2024.txt": """
+        "invoice_2024.txt": """>
             INVOICE #12345
             Date: November 20, 2025
             Bill To: John Doe
