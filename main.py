@@ -13,6 +13,10 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRe
 from rich.table import Table
 from rich.panel import Panel
 from rich import box
+from rich.tree import Tree
+from PIL import Image
+from PIL.ExifTags import TAGS
+import mimetypes
 
 console = Console()
 
@@ -496,12 +500,26 @@ def main():
         action="store_true",
         help="Undo the most recent sorting operation"
     )
+    parser.add_argument(
+        "--metadata",
+        metavar="PATH",
+        help="Show detailed metadata for a file or directory"
+    )
+    parser.add_argument(
+        "--meta",
+        metavar="PATH",
+        dest="metadata",
+        help="Alias for --metadata"
+    )
     args = parser.parse_args()
     if args.history:
         show_hist()
         return
     if args.undo:
         undo()
+        return
+    if args.metadata:
+        show_metadata(args.metadata)
         return
     if args.source is None:
         console.print("[red]Error:[/red] Source directory is required.")
@@ -566,7 +584,210 @@ def undo():
             del hist[dest]
     save_history(hist)
     console.print("[bold]Undo successful.[/bold]")
-    
+
+
+def get_metadata(path):
+    path = Path(path)
+    if not path.exists():
+        return None
+    meta = {
+        "filename": path.name,
+        "path": str(path.absolute()),
+        "size": path.stat().st_size,
+        "size_human": human_size(path.stat().st_size),
+        "created": datetime.fromtimestamp(path.stat().st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
+        "modified": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        "accessed": datetime.fromtimestamp(path.stat().st_atime).strftime("%Y-%m-%d %H:%M:%S"),
+        "extension": path.suffix,
+        "mime_type": mimetypes.guess_type(str(path))[0] or "unknown",
+    }
+    if path.suffix.lower() in [".jpg", ".jpeg", ".png", ".tiff", ".bmp", ".gif", ".webp"]:
+        try:
+            img = Image.open(path)
+            meta["image"] = {
+                "width": img.width,
+                "height": img.height,
+                "format": img.format,
+                "mode": img.mode,
+            }
+            data = img._getexif()
+            if data:
+                exif = {}
+                for tag_id, value in data.items():
+                    tag = TAGS.get(tag_id, tag_id)
+                    if isinstance(value, bytes):
+                        continue
+                    exif[tag] = str(value)[:100]
+                meta["exif"] = {
+                    "camera": exif.get("Model", "Unknown"),
+                    "date_taken": exif.get("DateTime", "Unknown"),
+                    "iso": exif.get("ISOSpeedRatings", "Unknown"),
+                    "exposure": exif.get("ExposureTime", "Unknown"),
+                    "aperture": exif.get("FNumber", "Unknown"),
+                    "focal_length": exif.get("FocalLength", "Unknown"),
+                    "gps": f"{exif.get('GPSLatitude', 'N/A')}, {exif.get('GPSLongitude', 'N/A')}"
+                }
+        except Exception as e:
+            meta["image_error"] = str(e)
+            
+    if path.suffix.lower() in ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a']:
+        try:
+            audio = AudioSegment.from_file(path)
+            duration = len(audio) / 1000.0
+            meta["audio"] = {
+                "duration": f"{int(duration // 60)}m {int(duration % 60)}s",
+                "sample_rate": f"{audio.frame_rate}Hz",
+                "channels": "Stereo" if audio.channels == 2 else "Mono",
+                "bits_per_sample": audio.sample_width * 8,
+            }
+            if path.suffix.lower() == '.mp3':
+                try:
+                    from mutagen.mp3 import MP3
+                    from mutagen.id3 import ID3
+                    audio_file = MP3(path)
+                    meta["audio"]["bitrate"] = f"{audio_file.info.bitrate // 1000}kbps"
+                    if audio_file.tags:
+                        id3 = audio_file.tags
+                        meta["id3"] = {
+                            "title": str(id3.get("TIT2", "Unknown")),
+                            "artist": str(id3.get("TPE1", "Unknown")),
+                            "album": str(id3.get("TALB", "Unknown")),
+                            "year": str(id3.get("TDRC", "Unknown")),
+                            "genre": str(id3.get("TCON", "Unknown")),
+                        }
+                except ImportError:
+                    pass
+                except Exception:
+                    pass
+        except Exception as e:
+            meta["audio_error"] = str(e)
+            
+    if path.suffix.lower() in ['.mp4', '.mkv', '.mov', '.avi', '.webm', '.flv']:
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', str(path)],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                video_info = json.loads(result.stdout)
+                if 'format' in video_info:
+                    fmt = video_info['format']
+                    meta["video"] = {
+                        "duration": f"{float(fmt.get('duration', 0)):.2f}s",
+                        "bitrate": f"{int(fmt.get('bit_rate', 0)) // 1000}kbps",
+                        "format": fmt.get('format_name', 'Unknown'),
+                    }
+                for stream in video_info.get('streams', []):
+                    if stream.get('codec_type') == 'video':
+                        meta["video"]["resolution"] = f"{stream.get('width', 0)}x{stream.get('height', 0)}"
+                        meta["video"]["codec"] = stream.get('codec_name', 'Unknown')
+                        meta["video"]["fps"] = stream.get('avg_frame_rate', 'Unknown')
+                        break
+        except Exception as e:
+            meta["video_error"] = str(e)
+    return meta
+
+
+def display_metadata(meta):
+    if not meta:
+        console.print("[red]Could not read metadata[/red]")
+        return
+    info_text = f"""[bold cyan]Filename:[/bold cyan] {meta['filename']}
+    [bold cyan]Path:[/bold cyan] {meta['path']}
+    [bold cyan]Size:[/bold cyan] {meta['size_human']} ({meta['size']:,} bytes)
+    [bold cyan]Type:[/bold cyan] {meta['mime_type']}
+    [bold cyan]Extension:[/bold cyan] {meta['extension']}
+    [bold yellow]Timestamps:[/bold yellow]
+    Created:  {meta['created']}
+    Modified: {meta['modified']}
+    Accessed: {meta['accessed']}"""
+    console.print(Panel(info_text, title="[bold green]File Information[/bold green]", 
+                        border_style="green", box=box.ROUNDED))
+    console.print()
+    if "image" in meta:
+        img_info = meta["image"]
+        img_text = f"[bold cyan]Dimensions:[/bold cyan] {img_info['dimensions']}\n"
+        img_text += f"[bold cyan]Format:[/bold cyan] {img_info['format']}\n"
+        img_text += f"[bold cyan]Color Mode:[/bold cyan] {img_info['mode']}"
+        console.print(Panel(img_text, title="[bold magenta]Image Properties[/bold magenta]", 
+                          border_style="magenta", box=box.ROUNDED))
+        console.print()
+        if "exif" in meta:
+            exif = meta["exif"]
+            exif_table = Table(title="EXIF Data", box=box.SIMPLE, show_header=False)
+            exif_table.add_column("Property", style="cyan", no_wrap=True)
+            exif_table.add_column("Value", style="white")
+            exif_table.add_row("Camera", exif.get("camera", "N/A"))
+            exif_table.add_row("Date Taken", exif.get("date_taken", "N/A"))
+            exif_table.add_row("ISO", exif.get("iso", "N/A"))
+            exif_table.add_row("Exposure", exif.get("exposure", "N/A"))
+            exif_table.add_row("Aperture", exif.get("aperture", "N/A"))
+            exif_table.add_row("Focal Length", exif.get("focal_length", "N/A"))
+            exif_table.add_row("GPS Location", exif.get("gps", "N/A"))
+            console.print(exif_table)
+            console.print()
+    if "audio" in meta:
+        audio_info = meta["audio"]
+        audio_text = f"[bold cyan]Duration:[/bold cyan] {audio_info['duration']}\n"
+        audio_text += f"[bold cyan]Sample Rate:[/bold cyan] {audio_info['sample_rate']}\n"
+        audio_text += f"[bold cyan]Channels:[/bold cyan] {audio_info['channels']}\n"
+        audio_text += f"[bold cyan]Bits per Sample:[/bold cyan] {audio_info['bits_per_sample']}"
+        if "bitrate" in audio_info:
+            audio_text += f"\n[bold cyan]Bitrate:[/bold cyan] {audio_info['bitrate']}"
+        console.print(Panel(audio_text, title="[bold blue]🎵 Audio Properties[/bold blue]", 
+                          border_style="blue", box=box.ROUNDED))
+        console.print()
+        if "id3" in meta:
+            id3 = meta["id3"]
+            id3_table = Table(title="ID3 Tags", box=box.SIMPLE, show_header=False)
+            id3_table.add_column("Tag", style="cyan", no_wrap=True)
+            id3_table.add_column("Value", style="white")
+            id3_table.add_row("Title", id3.get("title", "N/A"))
+            id3_table.add_row("Artist", id3.get("artist", "N/A"))
+            id3_table.add_row("Album", id3.get("album", "N/A"))
+            id3_table.add_row("Year", id3.get("year", "N/A"))
+            id3_table.add_row("Genre", id3.get("genre", "N/A"))
+            console.print(id3_table)
+            console.print()
+    if "video" in meta:
+        video_info = meta["video"]
+        video_text = f"[bold cyan]Duration:[/bold cyan] {video_info.get('duration', 'N/A')}\n"
+        video_text += f"[bold cyan]Resolution:[/bold cyan] {video_info.get('resolution', 'N/A')}\n"
+        video_text += f"[bold cyan]Codec:[/bold cyan] {video_info.get('codec', 'N/A')}\n"
+        video_text += f"[bold cyan]FPS:[/bold cyan] {video_info.get('fps', 'N/A')}\n"
+        video_text += f"[bold cyan]Bitrate:[/bold cyan] {video_info.get('bitrate', 'N/A')}\n"
+        video_text += f"[bold cyan]Format:[/bold cyan] {video_info.get('format', 'N/A')}"
+        console.print(Panel(video_text, title="[bold red]Video Properties[/bold red]", 
+                          border_style="red", box=box.ROUNDED))
+        console.print()
+
+
+def show_metadata(path):
+    p = Path(path)
+    if not p.exists():
+        console.print(f"[red]Path not found: {path}[/red]")
+        return
+    if p.is_file():
+        console.print(f"\n[bold green]Reading metadata for:[/bold green] {p.name}\n")
+        metadata = get_metadata(p)
+        display_metadata(metadata)
+    else:
+        files = list(p.rglob('*')) if p.is_dir() else []
+        files = [f for f in files if f.is_file()]
+        if not files:
+            console.print("[yellow] No files found in directory[/yellow]")
+            return
+        console.print(f"\n[bold green]Found {len(files)} files[/bold green]\n")
+        for i, file in enumerate(files, 1):
+            console.print(f"\n[bold cyan]═══ File {i}/{len(files)} ═══[/bold cyan]\n")
+            metadata = get_metadata(file)
+            display_metadata(metadata) 
+            if i < len(files):
+                console.print("\n" + "─" * 80 + "\n")
+
 
 if __name__ == "__main__":
     main()
