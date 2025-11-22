@@ -24,7 +24,10 @@ Shawtie is an AI powered file organization tool that uses ai to analyse, rename,
 
 ## Demo
 
-Demo video will be here
+https://github.com/user-attachments/assets/4d85f388-7e45-48bb-bc77-2802ce11ea74
+
+
+
 
 ## How to run locally
 
